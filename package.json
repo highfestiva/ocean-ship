@@ -1,0 +1,17 @@
+{
+  "name": "ocean",
+  "version": "0.0.1",
+  "description": "Oceanic thingie",
+  "main": "index.js",
+  "scripts": {
+    "start": "http-server"
+  },
+  "author": "Jonas Byström",
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
