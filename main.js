@@ -10,7 +10,11 @@ import { Sky } from './objects/Sky.js';
 let container, stats;
 let camera, scene, renderer;
 let controls, water, sun;
-let clock, delta, boxes, numBoxes, ship;
+let clock, delta, ship;
+
+const fire = {};
+const shots = [];
+const boxes = [];
 
 const waves = {
     A: { direction: 0, steepness: 0.10, wavelength: 60 },
@@ -61,32 +65,68 @@ function updateBoxes(delta) {
     });
 }
 
-function shipRelPos(r, rad) {
+function updateShots(delta) {
+    shots.forEach((shot, idx) => {
+        shot.velocity.add(new THREE.Vector3(0, -9.82*delta, 0));
+        shot.position.add(shot.velocity.clone().multiplyScalar(delta));
+        shot.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), shot.velocity.clone().normalize());
+        if (shot.position.y < -20) {
+            scene.remove(shot);
+            shot.geometry.dispose();
+            shot.material.dispose();
+            shots.splice(idx, 1);
+        }
+    });
+}
+
+function shipRelPos(r, rad, forceFactor) {
     const v = new THREE.Vector3(0, 0, -r);
     const rotation = new THREE.Quaternion();
     rotation.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rad);
     v.applyQuaternion(rotation);
+    const relPos = v.clone();
     v.applyQuaternion(ship.quaternion)
     v.add(ship.position);
-    return v;
+    return [v, relPos, forceFactor];
 }
 
 function updateShip(delta) {
     if (ship === undefined) {
         return;
     }
+    if (delta > 0.1) {
+        delta = 0.1;
+    }
+
+    // calculate force and torque given a few points on the ship
     const t = water.material.uniforms['time'].value;
-    const shipL2 = 100;
-    const shipW2 = 15;
-    const poss = [shipRelPos(shipL2, 0), shipRelPos(shipL2, Math.PI), shipRelPos(shipW2, Math.PI/2), shipRelPos(shipW2, Math.PI*3/2)];
-    let posAcc = poss.map((pos) => {
+    const shipL2 = 80;
+    const shipW2 = 10;
+    const poss = [shipRelPos(shipL2, 0, 1), shipRelPos(shipL2, Math.PI, 1), shipRelPos(shipW2, Math.PI/2, 5), shipRelPos(shipW2, Math.PI*3/2, 5), shipRelPos(0, 0, 1)];
+    const torque = new THREE.Vector3();
+    const push = new THREE.Vector3(); // total force
+    poss.forEach((pos2) => {
+        const [pos, relPos, forceFactor] = pos2;
         const waveInfo = getWaveInfo(pos.x, pos.z, t);
-        if (pos.y > waveInfo.position.y) {
-            return [pos, -9.82];
-        }
-        return [pos, (waveInfo.position.y-pos.y)*20];
+        var force = (pos.y > waveInfo.position.y) ? -9.82 : (waveInfo.position.y-pos.y) * 20; // above water = gravity, below = some kinda buoyancy
+        var forceXYZ = new THREE.Vector3(0, force*forceFactor, 0);
+        torque.add(relPos.clone().cross(forceXYZ));
+        push.add(forceXYZ);
     });
-    //console.log(posAcc);
+
+    // apply damping, ignore mass, etc.
+    const linearDampingFactor = 3e-2;
+    const angularDampingFactor = 1e-6;
+    ship.velocity.add(push.multiplyScalar(delta*linearDampingFactor));
+    ship.angularVelocity.add(torque.multiplyScalar(delta*angularDampingFactor));
+
+    // add some damping/friction
+    ship.velocity.multiplyScalar(1-(delta*0.5));
+    ship.angularVelocity.multiplyScalar(1-(delta*0.5));
+
+    ship.position.add(ship.velocity.clone().multiplyScalar(delta));
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(ship.angularVelocity.x, ship.angularVelocity.y, ship.angularVelocity.z));
+    ship.quaternion.premultiply(q);
 }
 
 init();
@@ -122,19 +162,15 @@ function init() {
 
     // floating boxes
     const boxGeometry = new THREE.BoxGeometry(2, 2, 2);
-    numBoxes = 30;
-    boxes = [];
-
+    const numBoxes = 30;
     for (let i = 0; i < numBoxes; i ++) {
-
         const box = new THREE.Mesh(
             boxGeometry,
             new THREE.MeshStandardMaterial({ roughness: 0 })
-       );
+        );
         box.position.set(Math.random() * 400 - 200, 0, Math.random() * 200 - 100);
         scene.add(box);
         boxes.push(box);
-
     }
 
     // Water
@@ -234,6 +270,8 @@ function init() {
 	const loader = new GLTFLoader().setPath('objects/');
 	loader.load('ship.gltf', async function (gltf) {
 		ship = gltf.scene;
+        ship.velocity = new THREE.Vector3();
+        ship.angularVelocity = new THREE.Vector3();
 		await renderer.compileAsync(ship, camera, scene);
 		scene.add(ship);
 		render();
@@ -343,9 +381,45 @@ function init() {
 
     //
 
+    window.addEventListener('mousedown', onMouseDown, false);
     window.addEventListener('resize', onWindowResize);
 
     clock = new THREE.Clock();
+}
+
+function aim(evt) {
+    var direction = new THREE.Vector3(
+        (evt.clientX / window.innerWidth)*2 - 1,
+      - (evt.clientY / window.innerHeight)*2 + 1,
+        0.5
+    );
+    direction.unproject(camera);
+    return direction.sub(camera.position).normalize();
+}
+
+function shoot() {
+    const dir = fire['dir'];
+    const speed = 50;
+    const direction = dir.clone().multiplyScalar(speed);
+
+    const geom = new THREE.CylinderGeometry(0.1, 0.2, 1, 20);
+    const shot = new THREE.Mesh(
+        geom,
+        new THREE.MeshStandardMaterial({ roughness: 0.5 })
+    );
+    shot.position.copy(camera.position);
+    shot.velocity = direction;
+    scene.add(shot);
+    shots.push(shot);
+}
+
+function onMouseDown(evt) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    fire['dir'] = aim(evt);
+    if (evt.button == 0) {
+        shoot();
+    }
 }
 
 function onWindowResize() {
@@ -359,6 +433,7 @@ function animate() {
     delta = clock.getDelta();
     water.material.uniforms['time'].value += delta;
     updateBoxes(delta);
+    updateShots(delta);
     updateShip(delta);
     render();
     stats.update();
