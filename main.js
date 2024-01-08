@@ -15,6 +15,7 @@ let clock, delta, ship;
 const fire = {};
 const shots = [];
 const boxes = [];
+const debris = [];
 
 const waves = {
     A: { direction: 0, steepness: 0.10, wavelength: 60 },
@@ -65,17 +66,69 @@ function updateBoxes(delta) {
     });
 }
 
+function rnd(x0, x1) {
+    return Math.random()*(x1-x0) + x0;
+}
+
+function createExplosion(point, normal) {
+    const debrisVel = 10;
+    for (let i = 0; i < 50; i ++) {
+        const part = new THREE.Mesh(
+            new THREE.BoxGeometry(rnd(0.1,1.2) ,rnd(0.2,1.3), rnd(0.3,0.7)),
+            new THREE.MeshStandardMaterial({ roughness: 0 })
+        );
+        part.position.copy(point);
+        const relVel = new THREE.Vector3(rnd(-debrisVel,debrisVel) ,rnd(-debrisVel,debrisVel), rnd(-debrisVel,debrisVel));
+        part.velocity = normal.clone().multiplyScalar(debrisVel*0.8).add(relVel);
+        part.angularVelocity = new THREE.Vector3(rnd(-2,2), rnd(-3,3), rnd(-4,4));
+        scene.add(part);
+        debris.push(part);
+    }
+}
+
+function dropShot(shot, idx) {
+    scene.remove(shot);
+    shot.geometry.dispose();
+    shot.material.dispose();
+    shots.splice(idx, 1);
+}
+
 function updateShots(delta) {
     shots.forEach((shot, idx) => {
         shot.velocity.add(new THREE.Vector3(0, -9.82*delta, 0));
-        shot.position.add(shot.velocity.clone().multiplyScalar(delta));
-        shot.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), shot.velocity.clone().normalize());
-        if (shot.position.y < -20) {
-            scene.remove(shot);
-            shot.geometry.dispose();
-            shot.material.dispose();
-            shots.splice(idx, 1);
+        const dir = shot.velocity.clone().normalize();
+        const step = shot.velocity.clone().multiplyScalar(delta);
+
+        var intersection = null;
+        var ray = new THREE.Raycaster(shot.position, dir, 0, step.length());
+        ray.intersectObject(ship).forEach(intsect => {
+            if (intersection == null) {
+                intersection = intsect;
+            }
+        });
+        if (intersection != null) {
+            dropShot(shot, idx);
+            // some bug in fetching the face normals
+            const normal = intersection.face.normal.z <= -0.98 ? new THREE.Vector3() : intersection.face.normal;
+            createExplosion(intersection.point, normal);
+            return;
         }
+
+        shot.position.add(step);
+        shot.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+        if (shot.position.y < -20) {
+            dropShot(shot, idx);
+        }
+    });
+}
+
+function updateDebris(delta) {
+    debris.forEach((part, idx) => {
+        part.velocity.add(new THREE.Vector3(0, -9.82*delta, 0));
+        const step = part.velocity.clone().multiplyScalar(delta);
+        part.position.add(step);
+        const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(part.angularVelocity.x*delta, part.angularVelocity.y*delta, part.angularVelocity.z*delta));
+        part.quaternion.premultiply(q);
     });
 }
 
@@ -116,7 +169,7 @@ function updateShip(delta) {
 
     // apply damping, ignore mass, etc.
     const linearDampingFactor = 3e-2;
-    const angularDampingFactor = 1e-6;
+    const angularDampingFactor = 1e-5;
     ship.velocity.add(push.multiplyScalar(delta*linearDampingFactor));
     ship.angularVelocity.add(torque.multiplyScalar(delta*angularDampingFactor));
 
@@ -125,7 +178,7 @@ function updateShip(delta) {
     ship.angularVelocity.multiplyScalar(1-(delta*0.5));
 
     ship.position.add(ship.velocity.clone().multiplyScalar(delta));
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(ship.angularVelocity.x, ship.angularVelocity.y, ship.angularVelocity.z));
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(ship.angularVelocity.x*delta, ship.angularVelocity.y*delta, ship.angularVelocity.z*delta));
     ship.quaternion.premultiply(q);
 }
 
@@ -282,8 +335,8 @@ function init() {
     controls = new OrbitControls(camera, renderer.domElement);
     controls.maxPolarAngle = Math.PI * 0.495;
     controls.target.set(0, 10, 0);
-    controls.minDistance = 40.0;
-    controls.maxDistance = 200.0;
+    controls.minDistance = 300.0;
+    controls.maxDistance = 2000.0;
     controls.update();
 
     //
@@ -399,10 +452,10 @@ function aim(evt) {
 
 function shoot() {
     const dir = fire['dir'];
-    const speed = 50;
+    const speed = 150;
     const direction = dir.clone().multiplyScalar(speed);
 
-    const geom = new THREE.CylinderGeometry(0.1, 0.2, 1, 20);
+    const geom = new THREE.CylinderGeometry(0.20, 0.17, 1.2, 20);
     const shot = new THREE.Mesh(
         geom,
         new THREE.MeshStandardMaterial({ roughness: 0.5 })
@@ -434,6 +487,7 @@ function animate() {
     water.material.uniforms['time'].value += delta;
     updateBoxes(delta);
     updateShots(delta);
+    updateDebris(delta);
     updateShip(delta);
     render();
     stats.update();
